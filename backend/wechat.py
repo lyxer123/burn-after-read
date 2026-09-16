@@ -78,5 +78,5 @@ async def message(request: Request):
     db.add_link(token, f["id"], "wechat:" + openid, "微信:" + openid)
     url = "%s/dl/%s" % (config.PUBLIC_HOST, token)
     xml = _text_reply(openid, to_user,
-                      "你的文件（下载一次后失效）：\n" + url)
+                      "你的文件（下载一次后失效）：\n点开链接后，请点击页面上的「下载文件」按钮。\n" + url)
     return Response(content=xml, media_type="application/xml")

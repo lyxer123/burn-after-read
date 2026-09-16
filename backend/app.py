@@ -18,7 +18,7 @@ import mimetypes
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -98,18 +98,108 @@ def burn_link(token: str):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# GET /dl/{token}        -> landing page (does NOT burn).
+#     Automated prefetchers (e.g. WeChat link-preview) only ever hit this
+#     route, so the one-time link survives until a human explicitly clicks
+#     the download button below.
+# GET /dl/{token}/fetch  -> stream the file and burn the link (the real grab).
+# ---------------------------------------------------------------------------
+LANDING_TMPL = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>文件下载 · 阅后即焚</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:#f5f7fa;color:#1f2329;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
+  .card{background:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.08);max-width:420px;width:100%;padding:28px}
+  h1{font-size:19px;margin:0 0 16px}
+  .file{background:#f5f7fa;border-radius:10px;padding:14px 16px;margin-bottom:14px}
+  .file .name{font-weight:600;word-break:break-all}
+  .file .meta{color:#8a9099;font-size:13px;margin-top:6px}
+  .warn{color:#b54708;background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:18px}
+  .wm{color:#59606b;font-size:12px;margin-bottom:18px}
+  a.btn{display:block;text-align:center;background:#1677ff;color:#fff;text-decoration:none;font-weight:600;
+        padding:13px;border-radius:10px;font-size:16px}
+  a.btn:active{background:#0958d9}
+</style></head>
+<body><div class="card">
+  <h1>🔒 文件下载（阅后即焚）</h1>
+  <div class="file">
+    <div class="name">{name}</div>
+    <div class="meta">{size} · {mime}</div>
+  </div>
+  <div class="warn">此链接仅可下载一次，下载后将自动失效，无法再次打开。</div>
+  {wm}
+  <a class="btn" href="{fetch_url}">下载文件</a>
+</div></body></html>"""
+
+ERROR_TMPL = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>链接失效</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:#f5f7fa;color:#1f2329;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
+  .card{background:#fff;border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.08);max-width:420px;width:100%;padding:28px;text-align:center}
+  h1{font-size:19px;margin:0 0 12px;color:#cf1322}
+  p{color:#59606b;font-size:14px;line-height:1.6;margin:0}
+</style></head>
+<body><div class="card">
+  <h1>链接已失效或无效</h1>
+  <p>该下载链接不存在、已被下载一次，或已被撤回。</p>
+</div></body></html>"""
+
+
+def _fmt_size(n):
+    try:
+        n = int(n)
+    except Exception:
+        return "未知大小"
+    if n < 1024:
+        return "%d B" % n
+    if n < 1024 * 1024:
+        return "%.1f KB" % (n / 1024)
+    return "%.1f MB" % (n / 1024 / 1024)
+
+
+def _error_page():
+    return HTMLResponse(content=ERROR_TMPL, status_code=404)
+
+
 @app.get("/dl/{token}")
-def download(token: str, request: Request, background: BackgroundTasks):
+def download_page(token: str, request: Request):
+    """Landing page for a one-time link. Never burns the link by itself,
+    so link-preview / prefetch bots cannot consume it ahead of the user."""
+    l = db.get_link(token)
+    if not l or l["status"] == "burned":
+        return _error_page()
+    f = db.get_file(l["file_id"])
+    wm = ""
+    if l.get("watermark_text"):
+        wm = '<div class="wm">文件已添加溯源水印：%s</div>' % l["watermark_text"]
+    html = LANDING_TMPL
+    html = html.replace("{name}", f["original_name"])
+    html = html.replace("{size}", _fmt_size(f.get("size")))
+    html = html.replace("{mime}", f.get("mime") or "文件")
+    html = html.replace("{wm}", wm)
+    html = html.replace("{fetch_url}", "/dl/%s/fetch" % token)
+    return HTMLResponse(content=html)
+
+
+@app.get("/dl/{token}/fetch")
+def download_fetch(token: str, request: Request, background: BackgroundTasks):
+    """Actually stream the file and burn the one-time link."""
     l = db.get_link(token)
     ip = request.client.host if request.client else ""
     ua = request.headers.get("user-agent", "")
     if not l or l["status"] == "burned":
         db.log(token if l else None, "denied", ip, ua)
-        raise HTTPException(404, "Link expired or invalid")
+        return _error_page()
     # atomically reserve so only one client ever gets the file
     if db.reserve(token) == 0:
         db.log(token, "denied", ip, ua)
-        raise HTTPException(404, "Link expired or invalid")
+        return _error_page()
 
     f = db.get_file(l["file_id"])
     path = f["store_path"]
