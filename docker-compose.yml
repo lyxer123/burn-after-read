@@ -1,0 +1,24 @@
+services:
+  onedl:
+    build: .
+    container_name: onedl
+    restart: always
+    # host:container; nginx (in another container) reaches the host bridge
+    # gateway 177.7.0.1:8777 -> this published port
+    ports:
+      - "8777:8777"
+    volumes:
+      - onedl_data:/data
+    environment:
+      - ONEDL_BASE=/data
+      - ONEDL_HOST=0.0.0.0
+      - ONEDL_PORT=8777
+      - ONEDL_PUBLIC_HOST=http://117.72.15.132
+      - ONEDL_WEB=/app/web
+      # Uncomment + set to enable the WeChat Official Account webhook at /wechat
+      # - ONEDL_WX_TOKEN=your_wx_token
+      # - ONEDL_WX_APPID=wx...
+      # - ONEDL_WX_SECRET=...
+
+volumes:
+  onedl_data:

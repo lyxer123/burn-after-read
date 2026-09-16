@@ -1,35 +1,28 @@
-# onedl — 阅后即焚下载服务（One-time Download）
+# onedl — 阅后即焚下载服务（One-time Download / Burn-after-read）
 
-一个极简的「链接下载一次即失效」服务。生成一个不可猜测的随机链接，对方点开下载成功后，
-**同一个链接立刻作废（第二次起 404）**。支持**任意文件类型**（PDF / ZIP / 图片 / 视频 / 安装包…），
-自动识别 MIME 并保留原始文件名。无数据库、无第三方依赖，单文件 Python 服务，Python 2.7 / 3.x 通吃。
+一个「链接下载一次即失效」的服务：生成不可猜测的随机链接，对方点开下载成功后，
+**同一个链接立刻作废（第二次起 404）**。本仓库提供两套实现：
 
----
+| 模式 | 路径 | 依赖 | 能力 |
+|------|------|------|------|
+| **极简版** | 仓库根 `service.py` + `gen.py` | 仅 Python 2.7 标准库 | 阅后即焚（文件类型无关），无数据库 |
+| **全栈版（推荐）** | `backend/` + `frontend/` | Python 3 + FastAPI + SQLite；Vue 3 | 上面全部 + **后台可视化 / SQLite / 自动水印 / 微信公众号衔接** |
 
-## 它能干什么
-
-- 发一份保密合同给客户，他下完你就知道链接已废，不怕被二次转发。
-- 给一批人各发一个独立链接（一人一链），谁下载了、谁没下载一目了然。
-- 临时分享一个大文件，不希望它长期挂在公网上。
-
-**注意**：链接是「随机不可猜测」而非「需要登录」。任何人拿到链接都能下一次，所以**别把同一个链接发给两个人**。
+> 仓库根的服务当前仍运行在京东云（`/opt/onedl`，python2.7，零依赖兜底）。
+> 全栈版是后续主推方案，需要 Python 3（用 Docker 跑在京东云上）。
 
 ---
 
-## 原理
+## 它能干什么（对应 4 个需求）
 
-```
-         /dl/<token>            consume(token)               stream
-浏览器 ───────────▶ nginx ───────────▶ onedl 服务 ─────────────────────▶ 文件
-                  (反代)         token 文件被原子 rename 到 consumed/    (仅一次)
-```
-
-1. `gen.py <文件> [数量]` 把文件以随机内部名存入 `store/`，并写入 N 个 token 文件（位于 `tokens/`）。
-2. 每个 token 文件两行：`内部存储名` + `原始下载文件名`。
-3. 访问 `/dl/<token>` 时，服务**先把 token 原子移入 `consumed/`**（谁先到谁得），再流式吐文件。
-4. 同一 token 第二次访问时，`tokens/` 里已无此文件 → 直接 `404`。
-
-因为「先消费、后发送」，并发也不会让两个人各拿到一份；链接严格一次性。
+1. **前端页面生成 / 查看状态**：Vue 3 页面可批量生成链接，并实时查看每条链接
+   **是否已分享 / 已下载 / 已焚毁**（`backend/` + `frontend/`）。
+2. **SQLite 存储**：链接、文件、访问日志全部存进 `onedl.db`，替代原来的目录文件
+   （`backend/db.py`）。
+3. **微信公众号衔接**：用户在公众号说"我要某文件"，自动推送一次性链接，后台可追踪
+   下载/焚毁状态。方案见 **`doc/wechat-integration.md`**，适配器见 `backend/wechat.py`。
+4. **自动水印溯源**：生成链接时可填写水印文字（如"发给:张三 / 微信 openid"），下载时
+   **自动把文字打进 PDF / 图片**再发出，文件外泄即可定位来源（`backend/watermark.py`）。
 
 ---
 
@@ -37,118 +30,100 @@
 
 ```
 onedl/
-├── service.py          # 主服务（HTTP，python2/3 兼容）
-├── gen.py              # 生成一次性下载链接
-├── onedl.service       # systemd 单元（开机自启 / 崩溃自重启）
-├── onedl.nginx.conf    # nginx location 片段（反代 /dl/）
-├── install.sh          # 一键安装（建目录 + systemd + 提示 nginx）
-├── LICENSE
+├── service.py            # 极简版服务（python2.7，零依赖，文件型 token）
+├── gen.py                # 极简版：生成一次性链接
+├── onedl.service         # 极简版 systemd 单元
+├── onedl.nginx.conf      # nginx /dl/ 反代片段
+├── install.sh            # 极简版一键安装
+├── backend/              # 全栈版后端（FastAPI + SQLite + 水印 + 公众号）
+│   ├── app.py            # REST API + /dl/<token> 焚毁下载
+│   ├── db.py             # SQLite：files / links / access_log
+│   ├── watermark.py      # PDF(reportlab+pypdf) / 图片(Pillow) 水印
+│   ├── wechat.py         # 公众号 webhook 适配器（设 ONEDL_WX_TOKEN 自动挂载）
+│   ├── config.py         # 环境变量配置
+│   └── requirements.txt
+├── frontend/             # 全栈版前端（Vue 3 + Vite）
+│   └── src/App.vue       # 生成表单 + 链接状态表格
+├── doc/
+│   └── wechat-integration.md   # 公众号衔接方案（能否做 / 怎么做 / 限制）
+├── Dockerfile            # 多阶段构建（前端构建 + Python3 后端）
+├── docker-compose.yml
+├── LICENSE               # MIT
 └── README.md
 ```
 
-运行时数据（**不入库**，见 `.gitignore`）：
-
-```
-/opt/onedl/
-├── store/        # 实际文件，随机内部名
-├── tokens/       # 未消费的链接（每一行一个 token 文件）
-├── consumed/     # 已消费的链接
-└── links.log     # 生成过的链接记录
-```
-
 ---
 
-## 部署
+## 全栈版本地开发
 
-### 1. 安装
-
-```bash
-git clone <your-repo> onedl
-cd onedl
-sudo bash install.sh
-```
-
-`install.sh` 会：建好 `/opt/onedl` 目录、安装 `service.py`/`gen.py`、注册并启动 systemd 服务。
-
-### 2. nginx（关键坑位）
-
-把 `onedl.nginx.conf` 的内容放进你的 `server {}` 块。**默认 `proxy_pass` 是 `127.0.0.1`**，
-仅当 nginx 与 onedl 同主机时成立。
-
-> ⚠️ **nginx 在 Docker 容器里时**：容器的 `127.0.0.1` 是它自己的回环，到不了宿主机。
-> 必须把 `proxy_pass` 改成**宿主机在 docker 网桥上的网关 IP**（例如 `http://177.7.0.1:8777/`），
-> 同时 systemd 单元的 `ONEDL_HOST` 也要设成同一个网关 IP，并且 onedl 服务要 `bind` 到该 IP。
-
-> ⚠️ **bind-mount 配置陷阱**：不要对「被容器绑定挂载」的 nginx 配置做 `sed -i` —— 容器会一直持有旧 inode，
-> 改完 `nginx -t` 通过、实际还是旧配置。正确做法：就地编辑文件后 `docker kill -s HUP nginx`，
-> 或直接 `docker restart nginx` 让它重新绑定当前文件。
-
-改完务必：
+### 后端
 
 ```bash
-docker exec nginx nginx -t      # 语法检查
-docker exec nginx nginx -s reload   # 或 docker restart nginx
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+# 可选：前端构建产物目录（后端会托管 SPA）
+export ONEDL_WEB=../frontend/dist
+uvicorn app:app --host 127.0.0.1 --port 8777
 ```
 
-### 3. 环境变量（改 `/etc/systemd/system/onedl.service` 的 `Environment=`）
+主要接口：
 
-| 变量 | 默认 | 说明 |
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| `ONEDL_BASE` | `/opt/onedl` | 工作目录 |
-| `ONEDL_PORT` | `8777` | 服务监听端口 |
-| `ONEDL_HOST` | `127.0.0.1` | 服务 bind 地址（容器场景填网桥网关 IP） |
-| `ONEDL_PUBLIC_HOST` | `http://117.72.15.132` | `gen.py` 生成的链接前缀 |
+| POST | `/api/links` | 上传文件 + `count` + `recipient` + `watermark_text` → 生成 N 个链接 |
+| GET  | `/api/links` | 列出全部链接（含 `status` / `shared_at` / `downloaded_at` / `burned_at` / `download_ip`） |
+| GET  | `/api/links/{token}` | 单条状态 |
+| POST | `/api/links/{token}/share` | 标记为已分享 |
+| POST | `/api/links/{token}/burn` | 管理员召回（下载前焚毁） |
+| GET  | `/dl/{token}` | 下载（首成即焚，自动水印） |
+| GET  | `/wechat` | 公众号回调（需在 `ONEDL_WX_TOKEN` 时启用） |
 
----
-
-## 使用
-
-```bash
-# 给某个文件生成 10 个一次性链接（默认打印到 stdout，并追加到 links.log）
-python /opt/onedl/gen.py /path/to/secret.pdf 10
-
-# 换一个文件也完全一样
-python /opt/onedl/gen.py /path/to/release-v2.zip 3
-```
-
-输出形如：
-
-```
-http://117.72.15.132/dl/4633195281c7a2d99fa1adf1a2caecee
-http://117.72.15.132/dl/7a366db4039e101bd59dcbbefe030450
-...
-```
-
-把链接发出去即可。每个链接：第一次 `200` 下载成功，之后 `404`。
-
-### 运维命令
+### 前端
 
 ```bash
-systemctl status onedl                       # 服务状态
-journalctl -u onedl                          # 日志
-ls /opt/onedl/tokens   | wc -l               # 当前未消费的链接数
-ls /opt/onedl/consumed | wc -l               # 已消费的链接数
+cd frontend
+npm install
+npm run dev          # 默认代理 /api、/dl 到 http://localhost:8777
+# 生产：npm run build -> dist/，由后端 ONEDL_WEB 托管
 ```
 
 ---
 
-## 验证「阅后即焚」
+## 部署到京东云
+
+环境现状：宿主只有 **Python 2.7**（极简版可直接跑）；全栈版需要 **Python 3** → 用 Docker。
+
+### 极简版（已在线上）
 
 ```bash
-L=$(python /opt/onedl/gen.py /etc/hostname 1)
-echo "$L"
-curl -s -o /tmp/a -w '第一次: HTTP=%{http_code} TYPE=%{content_type} SIZE=%{size_download}\n' "$L"
-curl -s -o /dev/null -w '第二次: HTTP=%{http_code}\n' "$L"
-curl -s -o /dev/null -w '第三次: HTTP=%{http_code}\n' "$L"
+sudo bash install.sh
+# nginx 把 /dl/ 反代到 177.7.0.1:8777（容器场景要点网桥网关 IP，非 127.0.0.1）
+docker exec nginx nginx -t && docker restart nginx
 ```
 
-预期：第一次 `200` + 正确 `Content-Type`，第二、三次 `404`。
+### 全栈版（Docker，推荐）
+
+```bash
+docker compose up -d --build
+# 先停掉老的 python2.7 onedl 服务，避免 8777 端口冲突：
+systemctl stop onedl
+```
+
+nginx 把 `/dl/`、`/api/`（及启用公众号时的 `/wechat`）反代到宿主网桥网关
+`177.7.0.1:8777` 即可（与极简版同一端口，无缝替换）。
+
+> ⚠️ **nginx 在容器里的两个铁律**（踩过坑）：
+> 1. 容器里的 `127.0.0.1` 是容器自己的回环，到不了宿主 → `proxy_pass` 用宿主机**网桥网关 IP**（如 `177.7.0.1`）。
+> 2. **不要 `sed -i` 容器 bind-mount 的 nginx 配置**（容器会持有旧 inode）→ 改完 `docker restart nginx` 或 `kill -HUP`。
 
 ---
 
 ## 安全说明
 
-- 链接随机 token 为 16 字节熵（128-bit），不可暴力猜测。
-- 删除 `tokens/` 里的某个文件即可「召回」一条尚未被下载的链接。
-- 消费后文件仍在 `store/` 中（便于审计/重发），如不需保留可自行清理 `consumed/` 对应记录。
-- 服务本身**不鉴权**，安全性依赖「链接保密 + 一次性」。如需访问管控，请在 nginx 层加 basic auth 或 IP 白名单。
+- 链接 token 为 128-bit 随机熵，不可暴力猜测。
+- 删除 `tokens/`（极简版）或 `links` 行（全栈版）即可「召回」尚未下载的链接。
+- 全栈版 `download_count` / `download_ip` / `access_log` 提供审计与溯源。
+- 服务本身**不鉴权**，安全性依赖「链接保密 + 一次性」；要访问控制请在 nginx 层加
+  basic auth / IP 白名单。
+- 水印用于溯源：下载时把"接收人 / openid"烧进文件，外泄即知来源。
