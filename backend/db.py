@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS files (
     store_path    TEXT NOT NULL,
     size          INTEGER,
     mime          TEXT,
+    keywords      TEXT,    -- comma-separated aliases for WeChat matching (e.g. 白皮书,中压直挂充电白皮书)
     created_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS links (
@@ -60,6 +61,7 @@ def init():
     c.executescript(SCHEMA)
     c.commit()
     c.close()
+    _migrate()
 
 
 def now_iso():
@@ -67,16 +69,26 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def add_file(original_name, store_path, size, mime):
+def add_file(original_name, store_path, size, mime, keywords=""):
     c = _conn()
     cur = c.execute(
-        "INSERT INTO files (original_name, store_path, size, mime, created_at) "
-        "VALUES (?,?,?,?,?)",
-        (original_name, store_path, size, mime, now_iso()))
+        "INSERT INTO files (original_name, store_path, size, mime, keywords, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (original_name, store_path, size, mime, keywords or "", now_iso()))
     fid = cur.lastrowid
     c.commit()
     c.close()
     return fid
+
+
+def _migrate():
+    """Add columns that may be missing on old DBs."""
+    c = _conn()
+    cols = [r[1] for r in c.execute("PRAGMA table_info(files)")]
+    if "keywords" not in cols:
+        c.execute("ALTER TABLE files ADD COLUMN keywords TEXT")
+        c.commit()
+    c.close()
 
 
 def add_link(token, file_id, recipient, watermark_text, ignore_dup=False):
@@ -119,13 +131,24 @@ def list_links():
 
 
 def find_file_by_keyword(keyword):
-    """Latest file whose original_name contains the keyword (for WeChat)."""
+    """Latest file that matches the WeChat keyword.
+
+    Matches if the user message (keyword) is contained in the file's
+    original_name OR its keywords aliases, or vice versa (alias/message
+    contains the file name). Returns the most recently uploaded match.
+    """
+    kw = (keyword or "").strip()
+    if not kw:
+        return None
     c = _conn()
-    row = c.execute(
-        "SELECT * FROM files WHERE original_name LIKE ? "
-        "ORDER BY id DESC LIMIT 1", ("%" + keyword + "%",)).fetchone()
+    rows = c.execute(
+        "SELECT * FROM files ORDER BY id DESC").fetchall()
     c.close()
-    return dict(row) if row else None
+    for r in rows:
+        hay = (r["original_name"] or "") + " " + (r["keywords"] or "")
+        if kw in hay or hay in kw:
+            return dict(r)
+    return None
 
 
 def mark_shared(token):

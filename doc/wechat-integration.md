@@ -197,3 +197,6 @@ POST https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=ACCESS_T
    -e ONEDL_PUBLIC_HOST=http://117.72.15.132 \
    -e ONEDL_WX_TOKEN=<新Token> onedl:latest`
 - 未认证账号无"客服消息"主动推送权限，被动回复不受影响（适配器用的就是被动回复）。
+
+> **关键词匹配说明（2026-09-16 修正）**：微信用户发来的文字是中文（如“白皮书”），而服务器文件名是英文（`whitepaper.pdf`），靠文件名匹配会全部 miss。因此在 `files` 表增加了 `keywords` 字段（逗号分隔的中文别名），`db.find_file_by_keyword` 现在同时匹配 `original_name` 与 `keywords`（双向包含）。给白皮书设的关键词：`白皮书,中压直挂充电白皮书,中压直挂充电系统技术白皮书,中压直挂,充电白皮书`。
+> 后续在管理页 `http://117.72.15.132/onedl/` 上传文件时，填“微信关键词”框即可自助绑定中文触发词。

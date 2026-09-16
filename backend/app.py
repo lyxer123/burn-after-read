@@ -47,6 +47,7 @@ async def create_links(
     count: int = Form(1),
     recipient: str = Form(""),
     watermark_text: str = Form(""),
+    keywords: str = Form(""),
 ):
     ext = os.path.splitext(file.filename or "file")[1]
     internal = uuid.uuid4().hex + ext
@@ -56,7 +57,7 @@ async def create_links(
     size = os.path.getsize(store_path)
     mime, _ = mimetypes.guess_type(file.filename or "")
     fid = db.add_file(file.filename or internal, store_path, size,
-                      mime or "application/octet-stream")
+                      mime or "application/octet-stream", keywords)
     links = []
     for _ in range(max(1, int(count))):
         token = uuid.uuid4().hex

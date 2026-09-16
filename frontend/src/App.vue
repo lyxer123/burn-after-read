@@ -6,6 +6,7 @@ const file = ref(null)
 const count = ref(1)
 const recipient = ref('')
 const watermark = ref('')
+const keywords = ref('')
 const generating = ref(false)
 const message = ref('')
 
@@ -36,6 +37,7 @@ async function onGenerate() {
   fd.append('count', String(count.value || 1))
   fd.append('recipient', recipient.value)
   fd.append('watermark_text', watermark.value)
+  fd.append('keywords', keywords.value)
   try {
     const r = await createLinks(fd)
     message.value = `已生成 ${r.data.links.length} 个一次性链接`
@@ -118,6 +120,10 @@ onUnmounted(() => clearInterval(timer))
         <label class="wide">
           水印文字（可选，下载时自动打上）
           <input type="text" v-model="watermark" placeholder="如 发给:张三 2026-09-16" />
+        </label>
+        <label class="wide">
+          微信关键词（可选，逗号分隔，如：白皮书,中压直挂充电白皮书）
+          <input type="text" v-model="keywords" placeholder="用户公众号发这些词时自动匹配本文件" />
         </label>
         <button :disabled="generating" @click="onGenerate">
           {{ generating ? '生成中…' : '生成一次性链接' }}
