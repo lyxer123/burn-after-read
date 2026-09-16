@@ -165,7 +165,7 @@ POST https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=ACCESS_T
 | API | `http://117.72.15.132/api/links` |
 | 下载 | `http://117.72.15.132/dl/<token>` |
 | 公众号回调 | `http://117.72.15.132/wechat`（nginx 已反代；HTTP 80 端口微信允许） |
-| 服务器 Token | `onedl-wx-2026-lyx`（= 容器环境变量 `ONEDL_WX_TOKEN`） |
+| 服务器 Token | `onedlwx2026lyx`（= 容器环境变量 `ONEDL_WX_TOKEN`） |
 
 极简 python2.7 版已停用（`systemctl disable onedl`）；旧 token 已用
 `backend/migrate_tokens.py` 全量导入 SQLite（含已消费状态），历史链接仍然有效。
@@ -182,7 +182,7 @@ POST https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=ACCESS_T
    白名单外的 IP 调 `cgi-bin/token` 会被拒（错误码 40164）。
 4. **服务器配置（修改配置）**：
    - URL：`http://117.72.15.132/wechat`
-   - Token：`onedl-wx-2026-lyx`（必须与服务器端 `ONEDL_WX_TOKEN` 完全一致）
+   - Token：`onedlwx2026lyx`（必须与服务器端 `ONEDL_WX_TOKEN` 完全一致；⚠️ Token 只能是 3~32 位字母或数字，**不能含 `-` 等符号**，否则后台直接标红"请输入正确的 Token"）
    - EncodingAESKey：点"随机生成"
    - 消息加解密方式：**明文模式**（最简单，适配器按明文处理）
    - 提交 → 微信立即 GET 校验签名，通过即启用。
