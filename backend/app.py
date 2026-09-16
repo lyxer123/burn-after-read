@@ -8,7 +8,8 @@ Endpoints
   GET  /api/links/<token>   single link status
   POST /api/links/<token>/share   mark as shared (user sent it)
   POST /api/links/<token>/burn    admin recall (burn before download)
-  GET  /dl/<token>          download (burns the link after first success)
+  GET  /dl/<token>          landing page (does NOT burn; shows a download button)
+  POST /dl/<token>/fetch    actually streams the file and burns the link
   GET  /                    serves the built Vue frontend (if present)
 """
 import os
@@ -18,7 +19,7 @@ import mimetypes
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
@@ -99,11 +100,14 @@ def burn_link(token: str):
 
 
 # ---------------------------------------------------------------------------
-# GET /dl/{token}        -> landing page (does NOT burn).
-#     Automated prefetchers (e.g. WeChat link-preview) only ever hit this
-#     route, so the one-time link survives until a human explicitly clicks
-#     the download button below.
-# GET /dl/{token}/fetch  -> stream the file and burn the link (the real grab).
+# GET  /dl/{token}        -> landing page (does NOT burn).
+#     Automated prefetchers (e.g. WeChat link-preview / security scanner)
+#     only ever issue GET, so they hit this route (or GET /fetch, which just
+#     redirects back here). The one-time link survives until a human explicitly
+#     clicks the download button.
+# POST /dl/{token}/fetch  -> stream the file and burn the link (the real grab).
+#     POST-only on purpose: prefetch bots never POST, so they can never
+#     consume the link ahead of the user.
 # ---------------------------------------------------------------------------
 LANDING_TMPL = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -119,9 +123,9 @@ LANDING_TMPL = """<!doctype html>
   .file .meta{color:#8a9099;font-size:13px;margin-top:6px}
   .warn{color:#b54708;background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:18px}
   .wm{color:#59606b;font-size:12px;margin-bottom:18px}
-  a.btn{display:block;text-align:center;background:#1677ff;color:#fff;text-decoration:none;font-weight:600;
-        padding:13px;border-radius:10px;font-size:16px}
-  a.btn:active{background:#0958d9}
+  a.btn,button.btn{display:block;width:100%;border:0;cursor:pointer;text-align:center;background:#1677ff;color:#fff;text-decoration:none;font-weight:600;
+        padding:13px;border-radius:10px;font-size:16px;box-sizing:border-box;font-family:inherit}
+  a.btn:active,button.btn:active{background:#0958d9}
 </style></head>
 <body><div class="card">
   <h1>🔒 文件下载（阅后即焚）</h1>
@@ -131,7 +135,9 @@ LANDING_TMPL = """<!doctype html>
   </div>
   <div class="warn">此链接仅可下载一次，下载后将自动失效，无法再次打开。</div>
   {wm}
-  <a class="btn" href="{fetch_url}">下载文件</a>
+  <form method="post" action="{fetch_url}" onsubmit="this.querySelector('button').textContent='正在准备下载…';">
+    <button class="btn" type="submit">下载文件</button>
+  </form>
 </div></body></html>"""
 
 ERROR_TMPL = """<!doctype html>
@@ -188,8 +194,16 @@ def download_page(token: str, request: Request):
 
 
 @app.get("/dl/{token}/fetch")
+def download_fetch_get(token: str):
+    """Prefetch bots (WeChat link scanner, etc.) only ever issue GET.
+    Never burn on GET - just bounce them back to the landing page."""
+    return RedirectResponse(url="/dl/%s" % token, status_code=302)
+
+
+@app.post("/dl/{token}/fetch")
 def download_fetch(token: str, request: Request, background: BackgroundTasks):
-    """Actually stream the file and burn the one-time link."""
+    """Actually stream the file and burn the one-time link.
+    POST-only so automated GET prefetchers can never consume it."""
     l = db.get_link(token)
     ip = request.client.host if request.client else ""
     ua = request.headers.get("user-agent", "")
