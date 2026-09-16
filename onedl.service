@@ -1,0 +1,24 @@
+[Unit]
+Description=onedl - one-time download (burn-after-read) service
+After=network.target
+
+[Service]
+Type=simple
+# --- config via environment (override without editing code) ---
+# ONEDL_HOST must be the docker bridge gateway IP when nginx runs in a
+# container (e.g. 177.7.0.1 on the JD Cloud host). Use 127.0.0.1 only if
+# nginx sits directly on the host.
+Environment=ONEDL_BASE=/opt/onedl
+Environment=ONEDL_PORT=8777
+Environment=ONEDL_HOST=127.0.0.1
+Environment=ONEDL_PUBLIC_HOST=http://117.72.15.132
+ExecStart=/usr/bin/python /opt/onedl/service.py
+WorkingDirectory=/opt/onedl
+Restart=always
+RestartSec=2
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

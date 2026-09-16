@@ -1,0 +1,6 @@
+# runtime data (never commit real tokens / served files)
+/store/
+/tokens/
+/consumed/
+/links.log
+*.bak
