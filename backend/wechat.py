@@ -20,8 +20,15 @@ import db
 
 router = APIRouter(prefix="/wechat", tags=["wechat"])
 
-# keyword -> file_id mapping. In production replace with a DB/lookup table.
+# Optional static keyword -> file_id mapping (takes priority over name match).
 KEYWORD_MAP = {}
+
+
+def _find_file(keyword):
+    if keyword in KEYWORD_MAP:
+        return db.get_file(KEYWORD_MAP[keyword])
+    # dynamic match: latest uploaded file whose name contains the keyword
+    return db.find_file_by_keyword(keyword)
 
 
 def _sha1(*parts):
@@ -61,14 +68,14 @@ async def message(request: Request):
     openid = d.get("FromUserName", "")
     to_user = d.get("ToUserName", "")
     keyword = (d.get("Content") or "").strip()
-    file_id = KEYWORD_MAP.get(keyword)
-    if file_id is None:
-        xml = _text_reply(openid, to_user, "发送文件名关键词获取一次性下载链接。")
+    f = _find_file(keyword)
+    if f is None:
+        xml = _text_reply(openid, to_user, "未找到匹配的文件，请发送文件名关键词（如：白皮书）。")
         return Response(content=xml, media_type="application/xml")
     # mint a single one-time link, watermarked with the requester's openid
     import uuid
     token = uuid.uuid4().hex
-    db.add_link(token, file_id, openid, "微信:" + openid)
+    db.add_link(token, f["id"], "wechat:" + openid, "微信:" + openid)
     url = "%s/dl/%s" % (config.PUBLIC_HOST, token)
     xml = _text_reply(openid, to_user,
                       "你的文件（下载一次后失效）：\n" + url)

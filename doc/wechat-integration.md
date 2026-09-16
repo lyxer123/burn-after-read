@@ -150,3 +150,50 @@ POST https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token=ACCESS_T
 - [ ] 点链接下载成功、文件带水印、后再点 404
 - [ ] 后台 Vue 页面该链接状态变为 `已下载（已焚）`，`download_ip` 有值
 - [ ] （可选）48h 内用客服消息主动推送
+
+---
+
+## 10. 线上已部署配置（2026-09-16 实际落地 · 京东云）
+
+当前线上（117.72.15.132）已切换为全栈 Docker 版并启用公众号适配器：
+
+| 项目 | 值 |
+|------|-----|
+| 容器 | `onedl`（onedl:latest，`--restart always`，发布到 `177.7.0.1:8777`） |
+| 数据 | `/opt/onedl-full/data`（SQLite `onedl.db` + `store/` + `wm/`） |
+| 管理页 | `http://117.72.15.132/onedl/` |
+| API | `http://117.72.15.132/api/links` |
+| 下载 | `http://117.72.15.132/dl/<token>` |
+| 公众号回调 | `http://117.72.15.132/wechat`（nginx 已反代；HTTP 80 端口微信允许） |
+| 服务器 Token | `onedl-wx-2026-lyx`（= 容器环境变量 `ONEDL_WX_TOKEN`） |
+
+极简 python2.7 版已停用（`systemctl disable onedl`）；旧 token 已用
+`backend/migrate_tokens.py` 全量导入 SQLite（含已消费状态），历史链接仍然有效。
+
+### 公众号后台操作步骤（新版 mp 界面，"能源算力"实测路径）
+
+登录 [mp.weixin.qq.com](https://mp.weixin.qq.com) → 左侧 **设置与开发 → 开发接口管理**
+（新版界面里它就是老版的"基本配置"）：
+
+1. **成为开发者**：首次进入按提示同意协议即可。
+2. **AppSecret**：页首"开发者ID(AppID)"旁点生成/重置，管理员微信扫码确认。
+   AppSecret **只显示一次**，立即复制保存（用于以后客服消息/OAuth；被动回复不需要它）。
+3. **IP 白名单**：同一页，把 `117.72.15.132` 加进去（一行一个 IP）。
+   白名单外的 IP 调 `cgi-bin/token` 会被拒（错误码 40164）。
+4. **服务器配置（修改配置）**：
+   - URL：`http://117.72.15.132/wechat`
+   - Token：`onedl-wx-2026-lyx`（必须与服务器端 `ONEDL_WX_TOKEN` 完全一致）
+   - EncodingAESKey：点"随机生成"
+   - 消息加解密方式：**明文模式**（最简单，适配器按明文处理）
+   - 提交 → 微信立即 GET 校验签名，通过即启用。
+5. 启用后，用户在公众号发消息（如"白皮书"）→ 适配器按文件名匹配最新文件 →
+   回复一次性链接（水印 = 发送者 openid，可溯源）→ 后台 `/onedl/` 可见下载/焚毁状态。
+
+### 注意
+
+- 若改 Token：改公众号后台的同时，改服务器环境变量并重建容器：
+  `docker rm -f onedl && docker run -d --name onedl --restart always \
+   -p 177.7.0.1:8777:8777 -v /opt/onedl-full/data:/data \
+   -e ONEDL_PUBLIC_HOST=http://117.72.15.132 \
+   -e ONEDL_WX_TOKEN=<新Token> onedl:latest`
+- 未认证账号无"客服消息"主动推送权限，被动回复不受影响（适配器用的就是被动回复）。

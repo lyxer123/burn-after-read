@@ -79,12 +79,14 @@ def add_file(original_name, store_path, size, mime):
     return fid
 
 
-def add_link(token, file_id, recipient, watermark_text):
+def add_link(token, file_id, recipient, watermark_text, ignore_dup=False):
     c = _conn()
-    c.execute(
-        "INSERT INTO links (token, file_id, recipient, watermark_text, status, created_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (token, file_id, recipient or "", watermark_text or "", "generated", now_iso()))
+    sql = ("INSERT OR IGNORE INTO links (token, file_id, recipient, watermark_text, status, created_at) "
+           "VALUES (?,?,?,?,?,?)" if ignore_dup else
+           "INSERT INTO links (token, file_id, recipient, watermark_text, status, created_at) "
+           "VALUES (?,?,?,?,?,?)")
+    c.execute(sql,
+              (token, file_id, recipient or "", watermark_text or "", "generated", now_iso()))
     c.commit()
     c.close()
 
@@ -114,6 +116,16 @@ def list_links():
         "ORDER BY l.created_at DESC").fetchall()
     c.close()
     return [dict(r) for r in rows]
+
+
+def find_file_by_keyword(keyword):
+    """Latest file whose original_name contains the keyword (for WeChat)."""
+    c = _conn()
+    row = c.execute(
+        "SELECT * FROM files WHERE original_name LIKE ? "
+        "ORDER BY id DESC LIMIT 1", ("%" + keyword + "%",)).fetchone()
+    c.close()
+    return dict(row) if row else None
 
 
 def mark_shared(token):

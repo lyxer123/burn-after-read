@@ -17,6 +17,8 @@ PUBLIC_HOST = os.environ.get("ONEDL_PUBLIC_HOST", "http://117.72.15.132")
 
 # WeChat Official Account adapter (optional). Set ONEDL_WX_TOKEN to enable /wechat.
 WX_TOKEN = os.environ.get("ONEDL_WX_TOKEN", "")
+WX_APPID = os.environ.get("ONEDL_WX_APPID", "")      # for active push / customer-service msg
+WX_SECRET = os.environ.get("ONEDL_WX_SECRET", "")
 
 for _d in (BASE, STORE, WM):
     try:
