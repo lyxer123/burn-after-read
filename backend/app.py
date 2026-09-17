@@ -10,8 +10,10 @@ Endpoints
   POST /api/links/<token>/burn    admin recall (burn before download)
   GET  /dl/<token>          landing page (does NOT burn; shows a download button)
   POST /dl/<token>/fetch    streams the file. WeChat links (recipient starts
-                            with 'wechat:') are reusable & never burned; manual
-                            links are one-time + captcha-gated.
+                            with 'wechat:') survive the platform's automated
+                            scanner (a full browser engine) via a grace window +
+                            a delivery cap, then burn after the human's download;
+                            manual links are one-time + captcha-gated.
   GET  /                    serves the built Vue frontend (if present)
 """
 import os
@@ -203,7 +205,7 @@ def download_page(token: str, request: Request):
         wm = '<div class="wm">文件已添加溯源水印：%s</div>' % l["watermark_text"]
     reusable = (l.get("recipient") or "").startswith("wechat:")
     if reusable:
-        warn_text = "点击「下载文件」即可获取，本链接可多次下载。"
+        warn_text = "本链接已做防微信扫描保护，下载一次后自动失效（阅后即焚）。"
         warn_cls = "ok"
         captcha_block = ""
     else:
@@ -280,8 +282,29 @@ def download_fetch(token: str, request: Request, background: BackgroundTasks, an
             path = wm_path
 
     if reusable:
-        # never burn the WeChat entry link; just log the fetch
-        db.log(token, "download", ip, ua)
+        # WeChat link: survive the platform's automated scanner but still burn
+        # after the human's download. The scanner fires within the grace window
+        # (a few seconds after the link is sent) and never burns the link; the
+        # first download AFTER the window (the human) burns it. A hard cap on
+        # total deliveries is a secondary safety net against infinite reuse.
+        db.inc_fetch(token)
+        should_burn = False
+        gu = l.get("grace_until")
+        if gu:
+            try:
+                if datetime.now(timezone.utc) > datetime.fromisoformat(gu):
+                    should_burn = True
+            except Exception:
+                should_burn = True
+        if (l.get("download_count") or 0) + 1 >= config.WECHAT_MAX_FETCHES:
+            should_burn = True
+        if should_burn:
+            def _burn():
+                db.burn_downloaded(token, ip)
+                db.log(token, "download", ip, ua)
+            background.add_task(_burn)
+        else:
+            db.log(token, "download", ip, ua)
     else:
         def _burn():
             db.finalize_burn(token, ip)

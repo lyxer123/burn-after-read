@@ -20,6 +20,16 @@ WX_TOKEN = os.environ.get("ONEDL_WX_TOKEN", "")
 WX_APPID = os.environ.get("ONEDL_WX_APPID", "")      # for active push / customer-service msg
 WX_SECRET = os.environ.get("ONEDL_WX_SECRET", "")
 
+# WeChat links must survive the platform's automated link-scanner (a full
+# browser engine that downloads the file within seconds of the link being
+# sent) while still behaving as "burn after read" for the human.
+#   * Downloads that happen inside the grace window (the scanner) never burn.
+#   * The first download AFTER the window (the human) burns the link.
+#   * A hard cap on total deliveries is a secondary safety net against anyone
+#     sharing the link and re-downloading it indefinitely.
+WECHAT_GRACE_SECONDS = 120   # scanner fires within this window -> free fetches
+WECHAT_MAX_FETCHES = 3       # total deliveries allowed before the link burns
+
 for _d in (BASE, STORE, WM):
     try:
         os.makedirs(_d, exist_ok=True)

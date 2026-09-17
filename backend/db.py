@@ -10,6 +10,7 @@ Replaces the old file-based tokens/consumed directories. Three tables:
 import os
 import sqlite3
 import random
+from datetime import datetime, timezone, timedelta
 
 import config
 
@@ -66,7 +67,6 @@ def init():
 
 
 def now_iso():
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -90,10 +90,16 @@ def _migrate():
         c.execute("ALTER TABLE files ADD COLUMN keywords TEXT")
         c.commit()
     lcols = [r[1] for r in c.execute("PRAGMA table_info(links)")]
-    for col, ctype in (("captcha_q", "TEXT"), ("captcha_a", "INTEGER")):
+    for col, ctype in (("captcha_q", "TEXT"), ("captcha_a", "INTEGER"),
+                       ("grace_until", "TEXT")):
         if col not in lcols:
             c.execute("ALTER TABLE links ADD COLUMN %s %s" % (col, ctype))
             c.commit()
+    # Existing rows predate the grace window: treat their grace as already
+    # expired so they burn on the very next fetch (one-time behaviour).
+    if "grace_until" not in lcols:
+        c.execute("UPDATE links SET grace_until=created_at WHERE grace_until IS NULL")
+        c.commit()
     c.close()
 
 
@@ -112,16 +118,23 @@ def _make_captcha():
 
 def add_link(token, file_id, recipient, watermark_text, ignore_dup=False):
     q, a = _make_captcha()
+    # WeChat links get a scanner grace window so the platform's automated
+    # link-scanner (a real browser engine) cannot burn the one-time link ahead
+    # of the human. Manual links get no grace (they burn on first download).
+    grace_until = None
+    if recipient and str(recipient).startswith("wechat:"):
+        grace_until = (datetime.now(timezone.utc)
+                       + timedelta(seconds=config.WECHAT_GRACE_SECONDS)).isoformat()
     c = _conn()
     sql = ("INSERT OR IGNORE INTO links (token, file_id, recipient, watermark_text, "
-           "status, created_at, captcha_q, captcha_a) "
-           "VALUES (?,?,?,?,?,?,?,?)" if ignore_dup else
+           "status, created_at, captcha_q, captcha_a, grace_until) "
+           "VALUES (?,?,?,?,?,?,?,?,?)" if ignore_dup else
            "INSERT INTO links (token, file_id, recipient, watermark_text, "
-           "status, created_at, captcha_q, captcha_a) "
-           "VALUES (?,?,?,?,?,?,?,?)")
+           "status, created_at, captcha_q, captcha_a, grace_until) "
+           "VALUES (?,?,?,?,?,?,?,?,?)")
     c.execute(sql,
               (token, file_id, recipient or "", watermark_text or "",
-               "generated", now_iso(), q, a))
+               "generated", now_iso(), q, a, grace_until))
     c.commit()
     c.close()
 
@@ -213,6 +226,32 @@ def finalize_burn(token, ip):
     c.execute(
         "UPDATE links SET status='burned', burned_at=?, download_ip=?, "
         "download_count=download_count+1 WHERE token=? AND status='downloaded'",
+        (now_iso(), ip, token))
+    c.commit()
+    c.close()
+    log(token, "burn", ip, "")
+
+
+def inc_fetch(token):
+    """Record one successful file delivery (used for the fetch cap)."""
+    c = _conn()
+    c.execute("UPDATE links SET download_count=download_count+1 WHERE token=?",
+              (token,))
+    c.commit()
+    c.close()
+
+
+def burn_downloaded(token, ip):
+    """Burn a WeChat (reusable) link after the human's download.
+
+    Unlike finalize_burn this does not require status='downloaded' (WeChat
+    links never pass through reserve()), and it does NOT increment
+    download_count again because inc_fetch() already counted this delivery.
+    """
+    c = _conn()
+    c.execute(
+        "UPDATE links SET status='burned', burned_at=?, download_ip=? "
+        "WHERE token=? AND status!='burned'",
         (now_iso(), ip, token))
     c.commit()
     c.close()
