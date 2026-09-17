@@ -9,7 +9,9 @@ Endpoints
   POST /api/links/<token>/share   mark as shared (user sent it)
   POST /api/links/<token>/burn    admin recall (burn before download)
   GET  /dl/<token>          landing page (does NOT burn; shows a download button)
-  POST /dl/<token>/fetch    actually streams the file and burns the link
+  POST /dl/<token>/fetch    streams the file. WeChat links (recipient starts
+                            with 'wechat:') are reusable & never burned; manual
+                            links are one-time + captcha-gated.
   GET  /                    serves the built Vue frontend (if present)
 """
 import os
@@ -122,6 +124,7 @@ LANDING_TMPL = """<!doctype html>
   .file .name{font-weight:600;word-break:break-all}
   .file .meta{color:#8a9099;font-size:13px;margin-top:6px}
   .warn{color:#b54708;background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:18px}
+  .warn.ok{color:#135200;background:#f6ffed;border-color:#b7eb8f}
   .wm{color:#59606b;font-size:12px;margin-bottom:18px}
   .cap{background:#f5f7fa;border-radius:10px;padding:14px 16px;margin-bottom:18px;text-align:left}
   .cap label{display:block;font-size:14px;margin-bottom:10px;color:#1f2329}
@@ -138,13 +141,10 @@ LANDING_TMPL = """<!doctype html>
     <div class="name">{name}</div>
     <div class="meta">{size} · {mime}</div>
   </div>
-  <div class="warn">此链接仅可下载一次，下载后将自动失效，无法再次打开。</div>
+  <div class="warn {warn_cls}">{warn_text}</div>
   {wm}
   <form method="post" action="{fetch_url}" onsubmit="this.querySelector('button').textContent='正在准备下载…';">
-    <div class="cap">
-      <label>安全验证（防自动抓取）：<b>{captcha_q}</b> = ?</label>
-      <input type="text" name="answer" inputmode="numeric" pattern="[0-9]+" placeholder="请输入计算结果" autocomplete="off" required>
-    </div>
+    {captcha_block}
     <button class="btn" type="submit">下载文件</button>
   </form>
 </div></body></html>"""
@@ -184,8 +184,16 @@ def _error_page():
 
 @app.get("/dl/{token}")
 def download_page(token: str, request: Request):
-    """Landing page for a one-time link. Never burns the link by itself,
-    so link-preview / prefetch bots cannot consume it ahead of the user."""
+    """Landing page for a link. Never burns the link by itself.
+
+    WeChat mints links with recipient='wechat:<openid>'. Those are
+    *reusable*: WeChat's link-security scanner runs a full browser engine
+    that loads this page AND submits the download form, so any single-use
+    / burn-on-download scheme gets consumed by the scanner ahead of the
+    human. For WeChat links we therefore never burn and skip the captcha -
+    the user can always fetch the file regardless of scanner activity.
+    Manually created links keep the one-time + captcha behaviour.
+    """
     l = db.get_link(token)
     if not l or l["status"] == "burned":
         return _error_page()
@@ -193,12 +201,27 @@ def download_page(token: str, request: Request):
     wm = ""
     if l.get("watermark_text"):
         wm = '<div class="wm">文件已添加溯源水印：%s</div>' % l["watermark_text"]
+    reusable = (l.get("recipient") or "").startswith("wechat:")
+    if reusable:
+        warn_text = "点击「下载文件」即可获取，本链接可多次下载。"
+        warn_cls = "ok"
+        captcha_block = ""
+    else:
+        warn_text = "此链接仅可下载一次，下载后将自动失效，无法再次打开。"
+        warn_cls = ""
+        captcha_block = (
+            '<div class="cap"><label>安全验证（防自动抓取）：<b>%s</b> = ?</label>'
+            '<input type="text" name="answer" inputmode="numeric" pattern="[0-9]+" '
+            'placeholder="请输入计算结果" autocomplete="off" required></div>'
+        ) % (l.get("captcha_q") or "")
     html = LANDING_TMPL
     html = html.replace("{name}", f["original_name"])
     html = html.replace("{size}", _fmt_size(f.get("size")))
     html = html.replace("{mime}", f.get("mime") or "文件")
     html = html.replace("{wm}", wm)
-    html = html.replace("{captcha_q}", l.get("captcha_q") or "")
+    html = html.replace("{warn_text}", warn_text)
+    html = html.replace("{warn_cls}", warn_cls)
+    html = html.replace("{captcha_block}", captcha_block)
     html = html.replace("{fetch_url}", "/dl/%s/fetch" % token)
     return HTMLResponse(content=html)
 
@@ -212,10 +235,13 @@ def download_fetch_get(token: str):
 
 @app.post("/dl/{token}/fetch")
 def download_fetch(token: str, request: Request, background: BackgroundTasks, answer: str = Form(None)):
-    """Actually stream the file and burn the one-time link.
-    POST-only so automated GET prefetchers can never consume it, and a
-    CAPTCHA answer gates the burn so WeChat's WebView-based link scanner
-    (which submits the form but never solves the arithmetic) cannot either.
+    """Stream the file.
+
+    - WeChat links (recipient starts with 'wechat:') are *reusable*: they are
+      never burned and the captcha is skipped. WeChat's link-security scanner
+      (a full browser engine that submits this very form) therefore cannot
+      consume the user's link - the human can always fetch the file.
+    - Manually created links keep the one-time + captcha behaviour.
     """
     l = db.get_link(token)
     ip = request.client.host if request.client else ""
@@ -223,22 +249,23 @@ def download_fetch(token: str, request: Request, background: BackgroundTasks, an
     if not l or l["status"] == "burned":
         db.log(token if l else None, "denied", ip, ua)
         return _error_page()
-    # anti-bot CAPTCHA: scanner submits the form without the correct answer,
-    # so it is denied WITHOUT burning the link. Only a human who reads+types
-    # the result reaches the download.
-    ca = l.get("captcha_a")
-    if ca is not None:
-        try:
-            ok = int((answer or "").strip()) == int(ca)
-        except (ValueError, TypeError):
-            ok = False
-        if not ok:
+
+    reusable = (l.get("recipient") or "").startswith("wechat:")
+
+    if not reusable:
+        # one-time + anti-bot CAPTCHA gate (manual links only)
+        ca = l.get("captcha_a")
+        if ca is not None:
+            try:
+                ok = int((answer or "").strip()) == int(ca)
+            except (ValueError, TypeError):
+                ok = False
+            if not ok:
+                db.log(token, "denied", ip, ua)
+                return _error_page()
+        if db.reserve(token) == 0:
             db.log(token, "denied", ip, ua)
             return _error_page()
-    # atomically reserve so only one client ever gets the file
-    if db.reserve(token) == 0:
-        db.log(token, "denied", ip, ua)
-        return _error_page()
 
     f = db.get_file(l["file_id"])
     path = f["store_path"]
@@ -252,11 +279,14 @@ def download_fetch(token: str, request: Request, background: BackgroundTasks, an
         if os.path.exists(wm_path):
             path = wm_path
 
-    def _burn():
-        db.finalize_burn(token, ip)
+    if reusable:
+        # never burn the WeChat entry link; just log the fetch
         db.log(token, "download", ip, ua)
-
-    background.add_task(_burn)
+    else:
+        def _burn():
+            db.finalize_burn(token, ip)
+            db.log(token, "download", ip, ua)
+        background.add_task(_burn)
     return FileResponse(path, media_type=mime, filename=display)
 
 

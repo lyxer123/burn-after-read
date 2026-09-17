@@ -72,12 +72,14 @@ async def message(request: Request):
     if f is None:
         xml = _text_reply(openid, to_user, "未找到匹配的文件，请发送文件名关键词（如：白皮书）。")
         return Response(content=xml, media_type="application/xml")
-    # mint a single one-time link, watermarked with the requester's openid
+    # mint a WeChat link (recipient='wechat:<openid>'). These are *reusable* -
+    # WeChat's link scanner (full browser engine) would otherwise burn a
+    # one-time link before the human can use it. Watermark = openid for tracing.
     import uuid
     token = uuid.uuid4().hex
     db.add_link(token, f["id"], "wechat:" + openid, "微信:" + openid)
     url = "%s/dl/%s" % (config.PUBLIC_HOST, token)
     xml = _text_reply(openid, to_user,
-                      "你的文件（下载一次后失效）：\n点开链接后，先完成页面的安全验证（一道简单算术题），"
-                      "再点击「下载文件」按钮即可。\n" + url)
+                      "你的文件已就绪：\n点开链接（若提示 IP 地址风险，请点「技术访问」），"
+                      "进入页面后直接点击「下载文件」即可，链接可重复下载。\n" + url)
     return Response(content=xml, media_type="application/xml")
