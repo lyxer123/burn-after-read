@@ -123,6 +123,11 @@ LANDING_TMPL = """<!doctype html>
   .file .meta{color:#8a9099;font-size:13px;margin-top:6px}
   .warn{color:#b54708;background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:18px}
   .wm{color:#59606b;font-size:12px;margin-bottom:18px}
+  .cap{background:#f5f7fa;border-radius:10px;padding:14px 16px;margin-bottom:18px;text-align:left}
+  .cap label{display:block;font-size:14px;margin-bottom:10px;color:#1f2329}
+  .cap label b{color:#1677ff;font-size:17px}
+  .cap input{width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d0d3d9;border-radius:8px;font-size:16px;font-family:inherit}
+  .cap input:focus{outline:none;border-color:#1677ff}
   a.btn,button.btn{display:block;width:100%;border:0;cursor:pointer;text-align:center;background:#1677ff;color:#fff;text-decoration:none;font-weight:600;
         padding:13px;border-radius:10px;font-size:16px;box-sizing:border-box;font-family:inherit}
   a.btn:active,button.btn:active{background:#0958d9}
@@ -136,6 +141,10 @@ LANDING_TMPL = """<!doctype html>
   <div class="warn">此链接仅可下载一次，下载后将自动失效，无法再次打开。</div>
   {wm}
   <form method="post" action="{fetch_url}" onsubmit="this.querySelector('button').textContent='正在准备下载…';">
+    <div class="cap">
+      <label>安全验证（防自动抓取）：<b>{captcha_q}</b> = ?</label>
+      <input type="text" name="answer" inputmode="numeric" pattern="[0-9]+" placeholder="请输入计算结果" autocomplete="off" required>
+    </div>
     <button class="btn" type="submit">下载文件</button>
   </form>
 </div></body></html>"""
@@ -189,6 +198,7 @@ def download_page(token: str, request: Request):
     html = html.replace("{size}", _fmt_size(f.get("size")))
     html = html.replace("{mime}", f.get("mime") or "文件")
     html = html.replace("{wm}", wm)
+    html = html.replace("{captcha_q}", l.get("captcha_q") or "")
     html = html.replace("{fetch_url}", "/dl/%s/fetch" % token)
     return HTMLResponse(content=html)
 
@@ -201,15 +211,30 @@ def download_fetch_get(token: str):
 
 
 @app.post("/dl/{token}/fetch")
-def download_fetch(token: str, request: Request, background: BackgroundTasks):
+def download_fetch(token: str, request: Request, background: BackgroundTasks, answer: str = Form(None)):
     """Actually stream the file and burn the one-time link.
-    POST-only so automated GET prefetchers can never consume it."""
+    POST-only so automated GET prefetchers can never consume it, and a
+    CAPTCHA answer gates the burn so WeChat's WebView-based link scanner
+    (which submits the form but never solves the arithmetic) cannot either.
+    """
     l = db.get_link(token)
     ip = request.client.host if request.client else ""
     ua = request.headers.get("user-agent", "")
     if not l or l["status"] == "burned":
         db.log(token if l else None, "denied", ip, ua)
         return _error_page()
+    # anti-bot CAPTCHA: scanner submits the form without the correct answer,
+    # so it is denied WITHOUT burning the link. Only a human who reads+types
+    # the result reaches the download.
+    ca = l.get("captcha_a")
+    if ca is not None:
+        try:
+            ok = int((answer or "").strip()) == int(ca)
+        except (ValueError, TypeError):
+            ok = False
+        if not ok:
+            db.log(token, "denied", ip, ua)
+            return _error_page()
     # atomically reserve so only one client ever gets the file
     if db.reserve(token) == 0:
         db.log(token, "denied", ip, ua)

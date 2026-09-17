@@ -9,6 +9,7 @@ Replaces the old file-based tokens/consumed directories. Three tables:
 """
 import os
 import sqlite3
+import random
 
 import config
 
@@ -88,17 +89,39 @@ def _migrate():
     if "keywords" not in cols:
         c.execute("ALTER TABLE files ADD COLUMN keywords TEXT")
         c.commit()
+    lcols = [r[1] for r in c.execute("PRAGMA table_info(links)")]
+    for col, ctype in (("captcha_q", "TEXT"), ("captcha_a", "INTEGER")):
+        if col not in lcols:
+            c.execute("ALTER TABLE links ADD COLUMN %s %s" % (col, ctype))
+            c.commit()
     c.close()
 
 
+def _make_captcha():
+    """A trivial arithmetic question used as an anti-bot gate.
+
+    WeChat's link-security scanner runs a real WebView: it loads the landing
+    page AND submits the download form, which would burn a one-time link ahead
+    of the user. A human reads "7 + 5 = ?" and types 12; an automated scanner
+    never solves it, so the link survives until a real person downloads.
+    """
+    a = random.randint(3, 15)
+    b = random.randint(3, 15)
+    return "%d + %d" % (a, b), a + b
+
+
 def add_link(token, file_id, recipient, watermark_text, ignore_dup=False):
+    q, a = _make_captcha()
     c = _conn()
-    sql = ("INSERT OR IGNORE INTO links (token, file_id, recipient, watermark_text, status, created_at) "
-           "VALUES (?,?,?,?,?,?)" if ignore_dup else
-           "INSERT INTO links (token, file_id, recipient, watermark_text, status, created_at) "
-           "VALUES (?,?,?,?,?,?)")
+    sql = ("INSERT OR IGNORE INTO links (token, file_id, recipient, watermark_text, "
+           "status, created_at, captcha_q, captcha_a) "
+           "VALUES (?,?,?,?,?,?,?,?)" if ignore_dup else
+           "INSERT INTO links (token, file_id, recipient, watermark_text, "
+           "status, created_at, captcha_q, captcha_a) "
+           "VALUES (?,?,?,?,?,?,?,?)")
     c.execute(sql,
-              (token, file_id, recipient or "", watermark_text or "", "generated", now_iso()))
+              (token, file_id, recipient or "", watermark_text or "",
+               "generated", now_iso(), q, a))
     c.commit()
     c.close()
 
